@@ -1,27 +1,371 @@
-import { Diagnostic, Document, Expr, Member, Position, Range } from './ast';
-import { Evaluator, Value } from './evaluator';
-import { parse } from './parser';
+import { Diagnostic, Document, Expr, Member, Position, Range } from "./ast";
+import { Evaluator, Value } from "./evaluator";
+import { parse } from "./parser";
 
-type Fragment={text:string; start:number; end:number; origin:Position; members:Member[]; diagnostics:Diagnostic[]};
-export type IncrementalAnalysis={document:Document; value:Value; diagnostics:Diagnostic[]; evaluator:Evaluator; parsedFragments:number; reusedFragments:number; invalidatedFields:number};
+type Fragment = {
+  text: string;
+  start: number;
+  end: number;
+  origin: Position;
+  members: Member[];
+  diagnostics: Diagnostic[];
+};
+export type IncrementalAnalysis = {
+  document: Document;
+  value: Value;
+  diagnostics: Diagnostic[];
+  evaluator: Evaluator;
+  parsedFragments: number;
+  reusedFragments: number;
+  invalidatedFields: number;
+};
 
 /** Splits only at root-level separators. Nested objects, arrays, strings and comments stay intact. */
-function spans(source:string):{start:number;end:number}[]{const result:{start:number;end:number}[]=[];let start=0,depth=0,inString=false,comment=false,escaped=false;const push=(end:number)=>{let a=start,b=end;while(a<b&&/\s|,/.test(source[a]!))a++;while(b>a&&/\s|,/.test(source[b-1]!))b--;if(a<b)result.push({start:a,end:b});start=end;};for(let i=0;i<source.length;i++){const char=source[i]!;if(comment){if(char==='\n')comment=false;continue;}if(inString){if(escaped){escaped=false;continue;}if(char==='\\'){escaped=true;continue;}if(char==='"')inString=false;continue;}if(char==='/'&&source[i+1]==='/'){comment=true;i++;continue;}if(char==='"'){inString=true;continue;}if('{[('.includes(char)){depth++;continue;}if('}])'.includes(char)){depth=Math.max(0,depth-1);continue;}if(depth===0&&(char==='\n'||char===','))push(i+1);}push(source.length);return result;}
-function positionAt(source:string,offset:number):Position{let line=0,last=0;for(let i=0;i<offset;i++)if(source[i]==='\n'){line++;last=i+1;}return {offset,line,column:offset-last};}
-function rangeAt(source:string,start:number,end:number):Range{return {start:positionAt(source,start),end:positionAt(source,end)};}
-function shiftRange(range:Range,delta:number,source:string):Range{return rangeAt(source,range.start.offset+delta,range.end.offset+delta);}
-function shiftExpr(expr:Expr,delta:number,source:string):Expr{const range=shiftRange(expr.range,delta,source);switch(expr.kind){case'literal':return {...expr,range};case'reference':return {...expr,range};case'unary':return {...expr,range,expression:shiftExpr(expr.expression,delta,source)};case'binary':return {...expr,range,left:shiftExpr(expr.left,delta,source),right:shiftExpr(expr.right,delta,source)};case'array':return {...expr,range,items:expr.items.map(item=>shiftExpr(item,delta,source))};case'object':return {...expr,range,members:expr.members.map(member=>shiftMember(member,delta,source))};case'index':return {...expr,range,target:shiftExpr(expr.target,delta,source),index:expr.index&&shiftExpr(expr.index,delta,source),slice:expr.slice&&{start:shiftExpr(expr.slice.start,delta,source),end:shiftExpr(expr.slice.end,delta,source)}};case'access':return {...expr,range,keyRange:shiftRange(expr.keyRange,delta,source),target:shiftExpr(expr.target,delta,source)};}}
-function shiftMember(member:Member,delta:number,source:string):Member{return {...member,range:shiftRange(member.range,delta,source),key:{...member.key,range:shiftRange(member.key.range,delta,source)},annotationRange:member.annotationRange&&shiftRange(member.annotationRange,delta,source),expression:shiftExpr(member.expression,delta,source)};}
-function shiftDiagnostic(diagnostic:Diagnostic,delta:number,source:string):Diagnostic{return {...diagnostic,range:shiftRange(diagnostic.range,delta,source)};}
-function pathsOf(members:Member[],parent=''):Map<Member,string>{const result=new Map<Member,string>();const visit=(items:Member[],prefix:string)=>items.forEach(member=>{const path=prefix?`${prefix}.${member.key.text}`:member.key.text;result.set(member,path);if(member.expression.kind==='object')visit(member.expression.members,path);});visit(members,parent);return result;}
-function expressionPath(expression:Expr,parent:string):string|undefined {if(expression.kind==='reference')return `${expression.relative&&parent?`${parent}.`:''}${expression.parts.map(part=>typeof part==='string'?part:part.key).join('.')}`;if(expression.kind==='access'){const target=expressionPath(expression.target,parent);return target?`${target}.${expression.key}`:undefined;}if(expression.kind==='index'&&expression.index?.kind==='literal'&&expression.index.representation==='string'){const target=expressionPath(expression.target,parent);return target?`${target}.${expression.index.value as string}`:undefined;}return undefined;}
-function dependencyGraph(members:Member[]):Map<string,Set<string>>{const memberPaths=pathsOf(members);const known=new Set(memberPaths.values());const reverse=new Map<string,Set<string>>();const add=(dependency:string,consumer:string)=>{if(!known.has(dependency))return;const consumers=reverse.get(dependency)??new Set<string>();consumers.add(consumer);reverse.set(dependency,consumers);};const scan=(expression:Expr,parent:string,consumer:string)=>{const path=expressionPath(expression,parent);if(path)add(path,consumer);switch(expression.kind){case'object':expression.members.forEach(member=>scan(member.expression,consumer,memberPaths.get(member)!));break;case'array':expression.items.forEach(item=>scan(item,parent,consumer));break;case'binary':scan(expression.left,parent,consumer);scan(expression.right,parent,consumer);break;case'unary':scan(expression.expression,parent,consumer);break;case'index':scan(expression.target,parent,consumer);if(expression.index)scan(expression.index,parent,consumer);if(expression.slice){scan(expression.slice.start,parent,consumer);scan(expression.slice.end,parent,consumer);}break;case'access':scan(expression.target,parent,consumer);break;}};for(const [member,path] of memberPaths){const parent=path.includes('.')?path.slice(0,path.lastIndexOf('.')):'';scan(member.expression,parent,path);}return reverse;}
-function affected(seeds:Iterable<string>,...graphs:Map<string,Set<string>>[]):Set<string>{const result=new Set(seeds),queue=[...result];while(queue.length){const path=queue.pop()!;for(const graph of graphs)for(const consumer of graph.get(path)??[])if(!result.has(consumer)){result.add(consumer);queue.push(consumer);}}return result;}
-export type DependencyEdge={from:string;to:string};
-export function dependencyEdges(document:Document):DependencyEdge[]{return [...dependencyGraph(document.members)].flatMap(([from,consumers])=>[...consumers].map(to=>({from,to})));}
+function spans(source: string): { start: number; end: number }[] {
+  const result: { start: number; end: number }[] = [];
+  let start = 0,
+    depth = 0,
+    inString = false,
+    comment = false,
+    escaped = false;
+  const push = (end: number) => {
+    let a = start,
+      b = end;
+    while (a < b && /\s|,/.test(source[a]!)) a++;
+    while (b > a && /\s|,/.test(source[b - 1]!)) b--;
+    if (a < b) result.push({ start: a, end: b });
+    start = end;
+  };
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i]!;
+    if (comment) {
+      if (char === "\n") comment = false;
+      continue;
+    }
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') inString = false;
+      continue;
+    }
+    if (char === "/" && source[i + 1] === "/") {
+      comment = true;
+      i++;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if ("{[(".includes(char)) {
+      depth++;
+      continue;
+    }
+    if ("}])".includes(char)) {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth === 0 && (char === "\n" || char === ",")) push(i + 1);
+  }
+  push(source.length);
+  return result;
+}
+function positionAt(source: string, offset: number): Position {
+  let line = 0,
+    last = 0;
+  for (let i = 0; i < offset; i++)
+    if (source[i] === "\n") {
+      line++;
+      last = i + 1;
+    }
+  return { offset, line, column: offset - last };
+}
+function rangeAt(source: string, start: number, end: number): Range {
+  return { start: positionAt(source, start), end: positionAt(source, end) };
+}
+function shiftRange(range: Range, delta: number, source: string): Range {
+  return rangeAt(source, range.start.offset + delta, range.end.offset + delta);
+}
+function shiftExpr(expr: Expr, delta: number, source: string): Expr {
+  const range = shiftRange(expr.range, delta, source);
+  switch (expr.kind) {
+    case "literal":
+      return { ...expr, range };
+    case "reference":
+      return { ...expr, range };
+    case "unary":
+      return {
+        ...expr,
+        range,
+        expression: shiftExpr(expr.expression, delta, source),
+      };
+    case "binary":
+      return {
+        ...expr,
+        range,
+        left: shiftExpr(expr.left, delta, source),
+        right: shiftExpr(expr.right, delta, source),
+      };
+    case "array":
+      return {
+        ...expr,
+        range,
+        items: expr.items.map((item) => shiftExpr(item, delta, source)),
+      };
+    case "object":
+      return {
+        ...expr,
+        range,
+        members: expr.members.map((member) =>
+          shiftMember(member, delta, source),
+        ),
+      };
+    case "index":
+      return {
+        ...expr,
+        range,
+        target: shiftExpr(expr.target, delta, source),
+        index: expr.index && shiftExpr(expr.index, delta, source),
+        slice: expr.slice && {
+          start: shiftExpr(expr.slice.start, delta, source),
+          end: shiftExpr(expr.slice.end, delta, source),
+        },
+      };
+    case "access":
+      return {
+        ...expr,
+        range,
+        keyRange: shiftRange(expr.keyRange, delta, source),
+        target: shiftExpr(expr.target, delta, source),
+      };
+  }
+}
+function shiftMember(member: Member, delta: number, source: string): Member {
+  return {
+    ...member,
+    range: shiftRange(member.range, delta, source),
+    key: { ...member.key, range: shiftRange(member.key.range, delta, source) },
+    annotationRange:
+      member.annotationRange &&
+      shiftRange(member.annotationRange, delta, source),
+    expression: shiftExpr(member.expression, delta, source),
+  };
+}
+function shiftDiagnostic(
+  diagnostic: Diagnostic,
+  delta: number,
+  source: string,
+): Diagnostic {
+  return { ...diagnostic, range: shiftRange(diagnostic.range, delta, source) };
+}
+function pathsOf(members: Member[], parent = ""): Map<Member, string> {
+  const result = new Map<Member, string>();
+  const visit = (items: Member[], prefix: string) =>
+    items.forEach((member) => {
+      const path = prefix ? `${prefix}.${member.key.text}` : member.key.text;
+      result.set(member, path);
+      if (member.expression.kind === "object")
+        visit(member.expression.members, path);
+    });
+  visit(members, parent);
+  return result;
+}
+function expressionPath(expression: Expr, parent: string): string | undefined {
+  if (expression.kind === "reference")
+    return `${expression.relative && parent ? `${parent}.` : ""}${expression.parts.map((part) => (typeof part === "string" ? part : part.key)).join(".")}`;
+  if (expression.kind === "access") {
+    const target = expressionPath(expression.target, parent);
+    return target ? `${target}.${expression.key}` : undefined;
+  }
+  if (
+    expression.kind === "index" &&
+    expression.index?.kind === "literal" &&
+    expression.index.representation === "string"
+  ) {
+    const target = expressionPath(expression.target, parent);
+    return target ? `${target}.${expression.index.value as string}` : undefined;
+  }
+  return undefined;
+}
+function dependencyGraph(members: Member[]): Map<string, Set<string>> {
+  const memberPaths = pathsOf(members);
+  const known = new Set(memberPaths.values());
+  const reverse = new Map<string, Set<string>>();
+  const add = (dependency: string, consumer: string) => {
+    if (!known.has(dependency)) return;
+    const consumers = reverse.get(dependency) ?? new Set<string>();
+    consumers.add(consumer);
+    reverse.set(dependency, consumers);
+  };
+  const scan = (expression: Expr, parent: string, consumer: string) => {
+    const path = expressionPath(expression, parent);
+    if (path) add(path, consumer);
+    switch (expression.kind) {
+      case "object":
+        expression.members.forEach((member) =>
+          scan(member.expression, consumer, memberPaths.get(member)!),
+        );
+        break;
+      case "array":
+        expression.items.forEach((item) => scan(item, parent, consumer));
+        break;
+      case "binary":
+        scan(expression.left, parent, consumer);
+        scan(expression.right, parent, consumer);
+        break;
+      case "unary":
+        scan(expression.expression, parent, consumer);
+        break;
+      case "index":
+        scan(expression.target, parent, consumer);
+        if (expression.index) scan(expression.index, parent, consumer);
+        if (expression.slice) {
+          scan(expression.slice.start, parent, consumer);
+          scan(expression.slice.end, parent, consumer);
+        }
+        break;
+      case "access":
+        scan(expression.target, parent, consumer);
+        break;
+    }
+  };
+  for (const [member, path] of memberPaths) {
+    const parent = path.includes(".")
+      ? path.slice(0, path.lastIndexOf("."))
+      : "";
+    scan(member.expression, parent, path);
+  }
+  return reverse;
+}
+function affected(
+  seeds: Iterable<string>,
+  ...graphs: Map<string, Set<string>>[]
+): Set<string> {
+  const result = new Set(seeds),
+    queue = [...result];
+  while (queue.length) {
+    const path = queue.pop()!;
+    for (const graph of graphs)
+      for (const consumer of graph.get(path) ?? [])
+        if (!result.has(consumer)) {
+          result.add(consumer);
+          queue.push(consumer);
+        }
+  }
+  return result;
+}
+export type DependencyEdge = { from: string; to: string };
+export function dependencyEdges(document: Document): DependencyEdge[] {
+  return [...dependencyGraph(document.members)].flatMap(([from, consumers]) =>
+    [...consumers].map((to) => ({ from, to })),
+  );
+}
 
 /** Reuses unchanged root declarations and reparses only affected declarations. Evaluation remains deterministic. */
 export class IncrementalAnalyzer {
- private fragments:Fragment[]=[]; private source=''; private reverse=new Map<string,Set<string>>(); private cache=new Map<string,Value>();
- analyze(source:string):IncrementalAnalysis {const next=spans(source);let prefix=0;while(prefix<next.length&&prefix<this.fragments.length&&source.slice(next[prefix]!.start,next[prefix]!.end)===this.fragments[prefix]!.text)prefix++;let suffix=0;while(suffix<next.length-prefix&&suffix<this.fragments.length-prefix){const n=next[next.length-1-suffix]!,old=this.fragments[this.fragments.length-1-suffix]!;if(source.slice(n.start,n.end)!==old.text)break;suffix++;}const oldChanged=this.fragments.slice(prefix,this.fragments.length-suffix).flatMap(fragment=>[...pathsOf(fragment.members).values()]);const changed:string[]=[];let parsed=0,reused=0;const fragments:Fragment[]=next.map((span,index)=>{const text=source.slice(span.start,span.end);const old=index<prefix?this.fragments[index]:index>=next.length-suffix?this.fragments[this.fragments.length-(next.length-index)]:undefined;const origin=positionAt(source,span.start);if(old){reused++;const delta=span.start-old.start;return {text,start:span.start,end:span.end,origin,members:delta?old.members.map(member=>shiftMember(member,delta,source)):old.members,diagnostics:delta?old.diagnostics.map(diagnostic=>shiftDiagnostic(diagnostic,delta,source)):old.diagnostics};}parsed++;const result=parse(text,origin);changed.push(...pathsOf(result.document.members).values());return {text,start:span.start,end:span.end,origin,members:result.document.members,diagnostics:result.diagnostics};});const document:Document={kind:'document',members:fragments.flatMap(fragment=>fragment.members),range:rangeAt(source,0,source.length)};const reverse=dependencyGraph(document.members);const invalidated=affected([...changed,...oldChanged],this.reverse,reverse);const evaluator=new Evaluator(document,this.cache,invalidated);const value=evaluator.evaluate();this.cache=evaluator.snapshotCache();this.reverse=reverse;this.fragments=fragments;this.source=source;return {document,value,diagnostics:[...fragments.flatMap(fragment=>fragment.diagnostics),...evaluator.diagnostics],evaluator,parsedFragments:parsed,reusedFragments:reused,invalidatedFields:invalidated.size};}
+  private fragments: Fragment[] = [];
+  private source = "";
+  private reverse = new Map<string, Set<string>>();
+  private cache = new Map<string, Value>();
+  analyze(source: string): IncrementalAnalysis {
+    const next = spans(source);
+    let prefix = 0;
+    while (
+      prefix < next.length &&
+      prefix < this.fragments.length &&
+      source.slice(next[prefix]!.start, next[prefix]!.end) ===
+        this.fragments[prefix]!.text
+    )
+      prefix++;
+    let suffix = 0;
+    while (
+      suffix < next.length - prefix &&
+      suffix < this.fragments.length - prefix
+    ) {
+      const n = next[next.length - 1 - suffix]!,
+        old = this.fragments[this.fragments.length - 1 - suffix]!;
+      if (source.slice(n.start, n.end) !== old.text) break;
+      suffix++;
+    }
+    const oldChanged = this.fragments
+      .slice(prefix, this.fragments.length - suffix)
+      .flatMap((fragment) => [...pathsOf(fragment.members).values()]);
+    const changed: string[] = [];
+    let parsed = 0,
+      reused = 0;
+    const fragments: Fragment[] = next.map((span, index) => {
+      const text = source.slice(span.start, span.end);
+      const old =
+        index < prefix
+          ? this.fragments[index]
+          : index >= next.length - suffix
+            ? this.fragments[this.fragments.length - (next.length - index)]
+            : undefined;
+      const origin = positionAt(source, span.start);
+      if (old) {
+        reused++;
+        const delta = span.start - old.start;
+        return {
+          text,
+          start: span.start,
+          end: span.end,
+          origin,
+          members: delta
+            ? old.members.map((member) => shiftMember(member, delta, source))
+            : old.members,
+          diagnostics: delta
+            ? old.diagnostics.map((diagnostic) =>
+                shiftDiagnostic(diagnostic, delta, source),
+              )
+            : old.diagnostics,
+        };
+      }
+      parsed++;
+      const result = parse(text, origin);
+      changed.push(...pathsOf(result.document.members).values());
+      return {
+        text,
+        start: span.start,
+        end: span.end,
+        origin,
+        members: result.document.members,
+        diagnostics: result.diagnostics,
+      };
+    });
+    const document: Document = {
+      kind: "document",
+      members: fragments.flatMap((fragment) => fragment.members),
+      range: rangeAt(source, 0, source.length),
+    };
+    const reverse = dependencyGraph(document.members);
+    const invalidated = affected(
+      [...changed, ...oldChanged],
+      this.reverse,
+      reverse,
+    );
+    const evaluator = new Evaluator(document, this.cache, invalidated);
+    const value = evaluator.evaluate();
+    this.cache = evaluator.snapshotCache();
+    this.reverse = reverse;
+    this.fragments = fragments;
+    this.source = source;
+    return {
+      document,
+      value,
+      diagnostics: [
+        ...fragments.flatMap((fragment) => fragment.diagnostics),
+        ...evaluator.diagnostics,
+      ],
+      evaluator,
+      parsedFragments: parsed,
+      reusedFragments: reused,
+      invalidatedFields: invalidated.size,
+    };
+  }
 }

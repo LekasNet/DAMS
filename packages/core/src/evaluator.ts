@@ -1,37 +1,640 @@
-import { Diagnostic, Document, Expr, Member, Range } from './ast';
-type Numeric={ type:'number'; n:bigint; d:bigint; representation:'int'|'float'|'hex'|'bin'|'oct'; width?:number };
-export type Value = Numeric | { type:'string'; value:string } | { type:'bool'; value:boolean } | { type:'null' } | { type:'undefined' } | { type:'array'; items:Value[] } | { type:'object'; fields: Map<string,Field>; dict:boolean };
-type Field={ member:Member; owner:Scope; path:string; value?:Value; evaluating?:boolean };
-type Scope={ parent?:Scope; fields:Map<string,Field>; dict:boolean; path:string };
-const undef=():Value=>({type:'undefined'}); const gcd=(a:bigint,b:bigint):bigint=>b===0n?(a<0n?-a:a):gcd(b,a%b);
-const reduce=(n:bigint,d:bigint):Numeric=>{if(d<0n){n=-n;d=-d;}const g=gcd(n,d);return {type:'number',n:n/g,d:d/g,representation:d===1n?'int':'float'};};
-const isNum=(v:Value):v is Numeric=>v.type==='number';
-const decimal=(text:string):Numeric=>{const [a,b='']=text.split('.');const d=10n**BigInt(b.length);return {type:'number',n:BigInt((a.startsWith('-')?'-':'')+(a.replace('-','')+b)),d,representation:'float'};};
+import { Diagnostic, Document, Expr, Member, Range } from "./ast";
+type Numeric = {
+  type: "number";
+  n: bigint;
+  d: bigint;
+  representation: "int" | "float" | "hex" | "bin" | "oct";
+  width?: number;
+};
+export type Value =
+  | Numeric
+  | { type: "string"; value: string }
+  | { type: "bool"; value: boolean }
+  | { type: "null" }
+  | { type: "undefined" }
+  | { type: "array"; items: Value[] }
+  | { type: "object"; fields: Map<string, Field>; dict: boolean };
+type Field = {
+  member: Member;
+  owner: Scope;
+  path: string;
+  value?: Value;
+  evaluating?: boolean;
+};
+type Scope = {
+  parent?: Scope;
+  fields: Map<string, Field>;
+  dict: boolean;
+  path: string;
+};
+const undef = (): Value => ({ type: "undefined" });
+const gcd = (a: bigint, b: bigint): bigint =>
+  b === 0n ? (a < 0n ? -a : a) : gcd(b, a % b);
+const reduce = (n: bigint, d: bigint): Numeric => {
+  if (d < 0n) {
+    n = -n;
+    d = -d;
+  }
+  const g = gcd(n, d);
+  return {
+    type: "number",
+    n: n / g,
+    d: d / g,
+    representation: d === 1n ? "int" : "float",
+  };
+};
+const isNum = (v: Value): v is Numeric => v.type === "number";
+const decimal = (text: string): Numeric => {
+  const [a, b = ""] = text.split(".");
+  const d = 10n ** BigInt(b.length);
+  return {
+    type: "number",
+    n: BigInt((a.startsWith("-") ? "-" : "") + (a.replace("-", "") + b)),
+    d,
+    representation: "float",
+  };
+};
 export class Evaluator {
- diagnostics:Diagnostic[]=[]; private root!:Scope; private memberFields=new Map<Member,Field>(); private invalidMembers=new Set<Member>(); private activeField?:Field; private evaluationStack:Field[]=[]; private computed=new Map<string,Value>(); constructor(private document:Document,private previous?:Map<string,Value>,private invalidated:ReadonlySet<string>=new Set()){}
- evaluate():Value {this.root=this.makeScope(this.document.members,undefined,false,'');for(const field of this.root.fields.values())this.field(field);return this.objectValue(this.root);}
- private issue(message:string,range:Range){this.diagnostics.push({message,range,severity:'error'});if(this.activeField)this.invalidMembers.add(this.activeField.member);}
- private makeScope(members:Member[],parent:Scope|undefined,dict:boolean,path:string):Scope{const s:Scope={parent,fields:new Map(),dict,path};for(const m of members){if(s.fields.has(m.key.text))this.issue(`Duplicate key '${m.key.text}'`,m.key.range);if(dict&&!m.key.quoted)this.issue('dict permits only string keys',m.key.range);const field={member:m,owner:s,path:path?`${path}.${m.key.text}`:m.key.text};s.fields.set(m.key.text,field);this.memberFields.set(m,field);}return s;}
- getMemberValue(member:Member):Value|undefined {const field=this.memberFields.get(member);return field?this.field(field):undefined;}
- hasEvaluationError(member:Member):boolean {return this.invalidMembers.has(member);}
- private objectValue(scope:Scope):Value{return {type:'object',fields:scope.fields,dict:scope.dict};}
- private field(f:Field):Value{if(f.value)return f.value;const cached=this.previous?.get(f.path);if(cached&&cached.type!=='object'&&cached.type!=='undefined'&&!this.invalidated.has(f.path)){f.value=cached;this.computed.set(f.path,cached);return cached;}if(f.evaluating){this.issue('Cyclic dependency',f.member.key.range);return undef();}const previous=this.activeField;this.activeField=f;f.evaluating=true;this.evaluationStack.push(f);let v=f.member.annotation==='dict'&&f.member.expression.kind==='object'?this.objectValue(this.makeScope(f.member.expression.members,f.owner,true,f.path)):this.expr(f.member.expression,f.owner,f.member.annotation);if(f.member.annotation)v=this.convert(v,f.member.annotation,f.member.annotationRange??f.member.key.range);this.evaluationStack.pop();f.evaluating=false;f.value=v;this.activeField=previous;if(v.type!=='object'&&v.type!=='undefined'&&!this.invalidMembers.has(f.member))this.computed.set(f.path,v);if(v.type==='object')for(const child of v.fields.values())this.field(child);return v;}
- private read(f:Field,range:Range):Value {if(!f.evaluating)return this.field(f);this.issue('Cyclic dependency',range);const first=this.evaluationStack.indexOf(f);for(const field of this.evaluationStack.slice(Math.max(0,first)))this.invalidMembers.add(field.member);return undef();}
- snapshotCache():Map<string,Value>{return new Map(this.computed);}
- private expr(e:Expr,scope:Scope,targetAnnotation?:string):Value {switch(e.kind){case'literal':return this.literal(e);case'object':{const dict=false;return this.objectValue(this.makeScope(e.members,scope,dict,this.activeField?.path??scope.path));}case'array':return {type:'array',items:e.items.map(x=>this.expr(x,scope))};case'reference':return this.reference(e,scope);case'unary':{const v=this.expr(e.expression,scope);if(v.type==='undefined')return v;if(!isNum(v)){this.issue('Unary operator requires number',e.range);return undef();}return {...v,n:e.op==='-'?-v.n:v.n};}case'binary':return this.binary(e,scope,targetAnnotation);case'index':return this.index(e,scope);case'access':return this.access(e,scope);}}
- private literal(e:Extract<Expr,{kind:'literal'}>):Value {if(e.representation==='string')return {type:'string',value:e.value as string};if(e.representation==='bool')return {type:'bool',value:e.value as boolean};if(e.representation==='null')return {type:'null'};if(e.representation==='undefined')return undef();if(e.representation==='float')return decimal(e.value as string);const source=e.value as bigint;const digits=(e.raw??'').slice(2).length;const width=e.representation==='hex'?Math.ceil(digits/2)*8:e.representation==='bin'?Math.ceil(digits/8)*8:e.representation==='oct'?Math.ceil(digits*3/8)*8:undefined;return {type:'number',n:source,d:1n,representation:e.representation,width};}
- private reference(e:Extract<Expr,{kind:'reference'}>,scope:Scope):Value {let s:Scope|undefined=e.relative?scope:this.root;let v:Value|undefined;for(let i=0;i<e.parts.length;i++){const key=typeof e.parts[i]==='string'?e.parts[i] as string:(e.parts[i] as {key:string}).key;if(i===0){const f=s?.fields.get(key);v=f?this.read(f,e.range):undef();if(f&&this.invalidMembers.has(f.member)&&this.activeField)this.invalidMembers.add(this.activeField.member);}else if(v?.type==='object'){if(v.dict){this.issue('dict fields require string indexing',e.range);return undef();}const f=v.fields.get(key);v=f?this.read(f,e.range):undef();if(f&&this.invalidMembers.has(f.member)&&this.activeField)this.invalidMembers.add(this.activeField.member);}else return undef();}return v??undef();}
- private binary(e:Extract<Expr,{kind:'binary'}>,scope:Scope,targetAnnotation?:string):Value{const a=this.expr(e.left,scope),b=this.expr(e.right,scope);if(a.type==='undefined'||b.type==='undefined')return undef();if(e.op==='&')return this.concat(a,b,e.range,targetAnnotation);if(!isNum(a)||!isNum(b)){this.issue('Arithmetic operators require numbers',e.range);return undef();}if(e.op==='/'&&b.n===0n){this.issue('Division by zero',e.range);return undef();}let v:Numeric;if(e.op==='+')v=reduce(a.n*b.d+b.n*a.d,a.d*b.d);else if(e.op==='-')v=reduce(a.n*b.d-b.n*a.d,a.d*b.d);else if(e.op==='*')v=reduce(a.n*b.n,a.d*b.d);else v=reduce(a.n*b.d,a.d*b.n);v.representation=a.representation==='float'||b.representation==='float'?'float':a.representation;if(e.op==='/'&&!this.terminating(v.d))v=decimal(this.round34(v));v.representation=a.representation==='float'||b.representation==='float'||e.op==='/'?'float':a.representation;if(v.representation==='hex'||v.representation==='bin'||v.representation==='oct')v.width=Math.max(a.width??0,b.width??0)||undefined;return v;}
- private concat(a:Value,b:Value,r:Range,targetAnnotation?:string):Value {if(a.type==='array'&&b.type==='array')return {type:'array',items:[...a.items,...b.items]};if(a.type==='object'&&b.type==='object'){const fields=new Map(a.fields);for(const [k,f]of b.fields){if(fields.has(k)){this.issue(`Duplicate key '${k}' in composition`,r);return undef();}fields.set(k,f);}return {type:'object',fields,dict:a.dict&&b.dict};}if((isNum(a)||a.type==='string')&&(isNum(b)||b.type==='string')){const rep=targetAnnotation==='str'?'string':targetAnnotation==='string'||targetAnnotation==='int'||targetAnnotation==='float'||targetAnnotation==='hex'||targetAnnotation==='bin'||targetAnnotation==='oct'?targetAnnotation:isNum(a)?a.representation:'string';try{const left=this.component(a,rep),right=this.component(b,rep);if(rep==='string')return {type:'string',value:left+right};const prefix=rep==='hex'?'0x':rep==='bin'?'0b':rep==='oct'?'0o':'';const bitWidth=(value:Value,text:string)=>isNum(value)&&value.width!==undefined?value.width:Math.ceil(text.length*(rep==='hex'?4:rep==='bin'?1:rep==='oct'?3:1)/8)*8;return {type:'number',n:BigInt(prefix+left+right),d:1n,representation:rep,width:bitWidth(a,left)+bitWidth(b,right)};}catch{this.issue('Invalid scalar composition',r);return undef();}}this.issue('Composition requires operands in the same group',r);return undef();}
- private component(v:Value,rep:string):string {if(v.type==='string')return v.value;if(!isNum(v)||v.d!==1n)throw Error();if(rep==='string')return v.representation==='hex'||v.representation==='bin'||v.representation==='oct'?this.component(v,v.representation):this.numberText(v);const base=rep==='hex'?16:rep==='bin'?2:rep==='oct'?8:10;if(v.n<0n)throw Error();let x=v.n.toString(base).toUpperCase();const width=this.widthIn(v,rep as Numeric['representation']);if(width!==undefined)x=x.padStart(width,'0');else if(rep==='hex'&&x.length%2)x='0'+x;else if(rep==='bin')x=x.padStart(Math.ceil(x.length/8)*8,'0');else if(rep==='oct')x=x.padStart(Math.ceil(x.length/3)*3,'0');return x;}
- private index(e:Extract<Expr,{kind:'index'}>,scope:Scope):Value {const v=this.expr(e.target,scope);if(v.type==='undefined')return v;const get=(x:Expr):number|undefined=>{const n=this.expr(x,scope);if(!isNum(n)||n.d!==1n||n.n<0n){this.issue('Index must be a non-negative integer',x.range);return;}return Number(n.n);};if(e.index){if(v.type==='object'){const key=this.expr(e.index,scope);if(key.type!=='string'){this.issue('Object index must be string',e.range);return undef();}const f=v.fields.get(key.value);return f?this.read(f,e.index.range):undef();}const i=get(e.index);if(i===undefined)return undef();if(v.type==='array')return v.items[i]??undef();if(isNum(v))return this.bytes(v)[i]??undef();this.issue('Indexing strings is not specified in DAMS v0.3',e.range);return undef();}if(e.slice){const start=get(e.slice.start),end=get(e.slice.end);if(start===undefined||end===undefined)return undef();if(v.type==='array'){const items:Value[]=[];for(let i=start;i<end;i++)items.push(v.items[i]??undef());return {type:'array',items};}if(isNum(v)){const bytes=this.bytes(v), wanted:Value[]=[];for(let i=start;i<end;i++)wanted.push(bytes[i]??undef());if(wanted.some(x=>x.type==='undefined'))return {type:'array',items:wanted};const hex=wanted.map(x=>(x as Numeric).n.toString(16).padStart(2,'0')).join('');return {type:'number',n:BigInt('0x'+hex),d:1n,representation:v.representation,width:wanted.length*8};}this.issue('Slicing is supported only for arrays and binary data',e.range);return undef();}return undef();}
- private access(e:Extract<Expr,{kind:'access'}>,scope:Scope):Value {const target=this.expr(e.target,scope);if(target.type==='undefined')return target;if(target.type!=='object'){this.issue('Path access requires object',e.range);return undef();}if(target.dict){this.issue('dict fields require string indexing',e.range);return undef();}const field=target.fields.get(e.key);return field?this.read(field,e.keyRange):undef();}
- private widthIn(v:Numeric,representation:Numeric['representation']):number|undefined {if(v.width===undefined)return undefined;const targetBits=representation==='hex'?4:representation==='bin'?1:representation==='oct'?3:undefined;return targetBits===undefined?undefined:Math.ceil(v.width/targetBits);}
- private bytes(v:Numeric):Value[]{if(v.d!==1n||v.n<0n)return [];const digits=this.widthIn(v,'hex')??v.n.toString(16).length;const hex=v.n.toString(16).padStart(Math.ceil(digits/2)*2,'0');return (hex.match(/../g)??[]).map(x=>({type:'number',n:BigInt('0x'+x),d:1n,representation:'hex',width:8}));}
- private convert(v:Value,a:string,r:Range):Value {if(v.type==='undefined')return v;if(a==='object')return v.type==='object'?v:(this.issue('Expected object',r),undef());if(a==='dict'){if(v.type!=='object'||!v.dict){this.issue('Cannot narrow object to dict',r);return undef();}return v;}if(a==='array')return v.type==='array'?v:(this.issue('Expected array',r),undef());if(a==='string'||a==='str')return v.type==='string'?v:{type:'string',value:this.display(v)};if(a==='bool')return v.type==='bool'?v:(this.issue('Expected bool',r),undef());if(a==='int'||a==='float'||a==='hex'||a==='bin'||a==='oct'){if(!isNum(v)||(a==='int'&&v.d!==1n)||(a!=='float'&&a!=='int'&&v.n<0n)){this.issue(`Cannot convert to ${a}`,r);return undef();}return {...v,representation:a};}this.issue(`Unsupported annotation '${a}'`,r);return undef();}
- numberText(v:Numeric):string {if(v.d===1n)return v.n.toString();let n=v.n<0n?-v.n:v.n, d=v.d,twos=0,fives=0;while(d%2n===0n){d/=2n;twos++;}while(d%5n===0n){d/=5n;fives++;}if(d===1n){const scale=Math.max(twos,fives);const x=n*(2n**BigInt(scale-twos))*(5n**BigInt(scale-fives));const raw=x.toString().padStart(scale+1,'0');return (v.n<0n?'-':'')+raw.slice(0,-scale)+'.'+raw.slice(-scale).replace(/0+$/,'');}return this.round34(v);}
- private round34(v:Numeric):string {const sign=v.n<0n?'-':'';let n=v.n<0n?-v.n:v.n;const integer=n/v.d;let digits=integer.toString();if(integer!==0n){const scale=Math.max(0,34-digits.length);const q=(n*10n**BigInt(scale))/v.d;const rem=(n*10n**BigInt(scale))%v.d;let z=q;if(rem*2n>v.d||(rem*2n===v.d&&q%2n===1n))z++;const s=z.toString();return sign+(scale? s.slice(0,-scale)+'.'+s.slice(-scale):s);}let leading=0;while(n*10n**BigInt(leading+1)<v.d)leading++;const scale=34+leading;let q=(n*10n**BigInt(scale))/v.d;const rem=(n*10n**BigInt(scale))%v.d;if(rem*2n>v.d||(rem*2n===v.d&&q%2n===1n))q++;return sign+'0.'+'0'.repeat(leading)+q.toString().padStart(34,'0');}
- formatValue(v:Value):string {if(isNum(v)){if(v.representation==='hex'||v.representation==='bin'||v.representation==='oct'){const base=v.representation==='hex'?16:v.representation==='bin'?2:8;const prefix=v.representation==='hex'?'0x':v.representation==='bin'?'0b':'0o';const width=this.widthIn(v,v.representation);return prefix+v.n.toString(base).toUpperCase().padStart(width??0,'0');}return this.numberText(v);}if(v.type==='string')return JSON.stringify(v.value);if(v.type==='bool')return String(v.value);if(v.type==='null'||v.type==='undefined')return v.type;if(v.type==='array')return `[${v.items.length} item${v.items.length===1?'':'s'}]`;return v.dict?'dict':'object';}
- private terminating(denominator:bigint):boolean {let d=denominator;while(d%2n===0n)d/=2n;while(d%5n===0n)d/=5n;return d===1n;}
- private display(v:Value):string {return this.formatValue(v);}
+  diagnostics: Diagnostic[] = [];
+  private root!: Scope;
+  private memberFields = new Map<Member, Field>();
+  private invalidMembers = new Set<Member>();
+  private activeField?: Field;
+  private evaluationStack: Field[] = [];
+  private computed = new Map<string, Value>();
+  constructor(
+    private document: Document,
+    private previous?: Map<string, Value>,
+    private invalidated: ReadonlySet<string> = new Set(),
+  ) {}
+  evaluate(): Value {
+    this.root = this.makeScope(this.document.members, undefined, false, "");
+    for (const field of this.root.fields.values()) this.field(field);
+    return this.objectValue(this.root);
+  }
+  private issue(message: string, range: Range) {
+    this.diagnostics.push({ message, range, severity: "error" });
+    if (this.activeField) this.invalidMembers.add(this.activeField.member);
+  }
+  private makeScope(
+    members: Member[],
+    parent: Scope | undefined,
+    dict: boolean,
+    path: string,
+  ): Scope {
+    const s: Scope = { parent, fields: new Map(), dict, path };
+    for (const m of members) {
+      if (s.fields.has(m.key.text))
+        this.issue(`Duplicate key '${m.key.text}'`, m.key.range);
+      if (dict && !m.key.quoted)
+        this.issue("dict permits only string keys", m.key.range);
+      const field = {
+        member: m,
+        owner: s,
+        path: path ? `${path}.${m.key.text}` : m.key.text,
+      };
+      s.fields.set(m.key.text, field);
+      this.memberFields.set(m, field);
+    }
+    return s;
+  }
+  getMemberValue(member: Member): Value | undefined {
+    const field = this.memberFields.get(member);
+    return field ? this.field(field) : undefined;
+  }
+  hasEvaluationError(member: Member): boolean {
+    return this.invalidMembers.has(member);
+  }
+  private objectValue(scope: Scope): Value {
+    return { type: "object", fields: scope.fields, dict: scope.dict };
+  }
+  private field(f: Field): Value {
+    if (f.value) return f.value;
+    const cached = this.previous?.get(f.path);
+    if (
+      cached &&
+      cached.type !== "object" &&
+      cached.type !== "undefined" &&
+      !this.invalidated.has(f.path)
+    ) {
+      f.value = cached;
+      this.computed.set(f.path, cached);
+      return cached;
+    }
+    if (f.evaluating) {
+      this.issue("Cyclic dependency", f.member.key.range);
+      return undef();
+    }
+    const previous = this.activeField;
+    this.activeField = f;
+    f.evaluating = true;
+    this.evaluationStack.push(f);
+    let v =
+      f.member.annotation === "dict" && f.member.expression.kind === "object"
+        ? this.objectValue(
+            this.makeScope(f.member.expression.members, f.owner, true, f.path),
+          )
+        : this.expr(f.member.expression, f.owner, f.member.annotation);
+    if (f.member.annotation)
+      v = this.convert(
+        v,
+        f.member.annotation,
+        f.member.annotationRange ?? f.member.key.range,
+      );
+    this.evaluationStack.pop();
+    f.evaluating = false;
+    f.value = v;
+    this.activeField = previous;
+    if (
+      v.type !== "object" &&
+      v.type !== "undefined" &&
+      !this.invalidMembers.has(f.member)
+    )
+      this.computed.set(f.path, v);
+    if (v.type === "object")
+      for (const child of v.fields.values()) this.field(child);
+    return v;
+  }
+  private read(f: Field, range: Range): Value {
+    if (!f.evaluating) return this.field(f);
+    this.issue("Cyclic dependency", range);
+    const first = this.evaluationStack.indexOf(f);
+    for (const field of this.evaluationStack.slice(Math.max(0, first)))
+      this.invalidMembers.add(field.member);
+    return undef();
+  }
+  snapshotCache(): Map<string, Value> {
+    return new Map(this.computed);
+  }
+  private expr(e: Expr, scope: Scope, targetAnnotation?: string): Value {
+    switch (e.kind) {
+      case "literal":
+        return this.literal(e);
+      case "object": {
+        const dict = false;
+        return this.objectValue(
+          this.makeScope(
+            e.members,
+            scope,
+            dict,
+            this.activeField?.path ?? scope.path,
+          ),
+        );
+      }
+      case "array":
+        return {
+          type: "array",
+          items: e.items.map((x) => this.expr(x, scope)),
+        };
+      case "reference":
+        return this.reference(e, scope);
+      case "unary": {
+        const v = this.expr(e.expression, scope);
+        if (v.type === "undefined") return v;
+        if (!isNum(v)) {
+          this.issue("Unary operator requires number", e.range);
+          return undef();
+        }
+        return { ...v, n: e.op === "-" ? -v.n : v.n };
+      }
+      case "binary":
+        return this.binary(e, scope, targetAnnotation);
+      case "index":
+        return this.index(e, scope);
+      case "access":
+        return this.access(e, scope);
+    }
+  }
+  private literal(e: Extract<Expr, { kind: "literal" }>): Value {
+    if (e.representation === "string")
+      return { type: "string", value: e.value as string };
+    if (e.representation === "bool")
+      return { type: "bool", value: e.value as boolean };
+    if (e.representation === "null") return { type: "null" };
+    if (e.representation === "undefined") return undef();
+    if (e.representation === "float") return decimal(e.value as string);
+    const source = e.value as bigint;
+    const digits = (e.raw ?? "").slice(2).length;
+    const width =
+      e.representation === "hex"
+        ? Math.ceil(digits / 2) * 8
+        : e.representation === "bin"
+          ? Math.ceil(digits / 8) * 8
+          : e.representation === "oct"
+            ? Math.ceil((digits * 3) / 8) * 8
+            : undefined;
+    return {
+      type: "number",
+      n: source,
+      d: 1n,
+      representation: e.representation,
+      width,
+    };
+  }
+  private reference(
+    e: Extract<Expr, { kind: "reference" }>,
+    scope: Scope,
+  ): Value {
+    let s: Scope | undefined = e.relative ? scope : this.root;
+    let v: Value | undefined;
+    for (let i = 0; i < e.parts.length; i++) {
+      const key =
+        typeof e.parts[i] === "string"
+          ? (e.parts[i] as string)
+          : (e.parts[i] as { key: string }).key;
+      if (i === 0) {
+        const f = s?.fields.get(key);
+        v = f ? this.read(f, e.range) : undef();
+        if (f && this.invalidMembers.has(f.member) && this.activeField)
+          this.invalidMembers.add(this.activeField.member);
+      } else if (v?.type === "object") {
+        if (v.dict) {
+          this.issue("dict fields require string indexing", e.range);
+          return undef();
+        }
+        const f = v.fields.get(key);
+        v = f ? this.read(f, e.range) : undef();
+        if (f && this.invalidMembers.has(f.member) && this.activeField)
+          this.invalidMembers.add(this.activeField.member);
+      } else return undef();
+    }
+    return v ?? undef();
+  }
+  private binary(
+    e: Extract<Expr, { kind: "binary" }>,
+    scope: Scope,
+    targetAnnotation?: string,
+  ): Value {
+    const a = this.expr(e.left, scope),
+      b = this.expr(e.right, scope);
+    if (a.type === "undefined" || b.type === "undefined") return undef();
+    if (e.op === "&") return this.concat(a, b, e.range, targetAnnotation);
+    if (!isNum(a) || !isNum(b)) {
+      this.issue("Arithmetic operators require numbers", e.range);
+      return undef();
+    }
+    if (e.op === "/" && b.n === 0n) {
+      this.issue("Division by zero", e.range);
+      return undef();
+    }
+    let v: Numeric;
+    if (e.op === "+") v = reduce(a.n * b.d + b.n * a.d, a.d * b.d);
+    else if (e.op === "-") v = reduce(a.n * b.d - b.n * a.d, a.d * b.d);
+    else if (e.op === "*") v = reduce(a.n * b.n, a.d * b.d);
+    else v = reduce(a.n * b.d, a.d * b.n);
+    v.representation =
+      a.representation === "float" || b.representation === "float"
+        ? "float"
+        : a.representation;
+    if (e.op === "/" && !this.terminating(v.d)) v = decimal(this.round34(v));
+    v.representation =
+      a.representation === "float" ||
+      b.representation === "float" ||
+      e.op === "/"
+        ? "float"
+        : a.representation;
+    if (
+      v.representation === "hex" ||
+      v.representation === "bin" ||
+      v.representation === "oct"
+    )
+      v.width = Math.max(a.width ?? 0, b.width ?? 0) || undefined;
+    return v;
+  }
+  private concat(
+    a: Value,
+    b: Value,
+    r: Range,
+    targetAnnotation?: string,
+  ): Value {
+    if (a.type === "array" && b.type === "array")
+      return { type: "array", items: [...a.items, ...b.items] };
+    if (a.type === "object" && b.type === "object") {
+      const fields = new Map(a.fields);
+      for (const [k, f] of b.fields) {
+        if (fields.has(k)) {
+          this.issue(`Duplicate key '${k}' in composition`, r);
+          return undef();
+        }
+        fields.set(k, f);
+      }
+      return { type: "object", fields, dict: a.dict && b.dict };
+    }
+    if (
+      (isNum(a) || a.type === "string") &&
+      (isNum(b) || b.type === "string")
+    ) {
+      const rep =
+        targetAnnotation === "str"
+          ? "string"
+          : targetAnnotation === "string" ||
+              targetAnnotation === "int" ||
+              targetAnnotation === "float" ||
+              targetAnnotation === "hex" ||
+              targetAnnotation === "bin" ||
+              targetAnnotation === "oct"
+            ? targetAnnotation
+            : isNum(a)
+              ? a.representation
+              : "string";
+      try {
+        const left = this.component(a, rep),
+          right = this.component(b, rep);
+        if (rep === "string") return { type: "string", value: left + right };
+        const prefix =
+          rep === "hex"
+            ? "0x"
+            : rep === "bin"
+              ? "0b"
+              : rep === "oct"
+                ? "0o"
+                : "";
+        const bitWidth = (value: Value, text: string) =>
+          isNum(value) && value.width !== undefined
+            ? value.width
+            : Math.ceil(
+                (text.length *
+                  (rep === "hex"
+                    ? 4
+                    : rep === "bin"
+                      ? 1
+                      : rep === "oct"
+                        ? 3
+                        : 1)) /
+                  8,
+              ) * 8;
+        return {
+          type: "number",
+          n: BigInt(prefix + left + right),
+          d: 1n,
+          representation: rep,
+          width: bitWidth(a, left) + bitWidth(b, right),
+        };
+      } catch {
+        this.issue("Invalid scalar composition", r);
+        return undef();
+      }
+    }
+    this.issue("Composition requires operands in the same group", r);
+    return undef();
+  }
+  private component(v: Value, rep: string): string {
+    if (v.type === "string") return v.value;
+    if (!isNum(v) || v.d !== 1n) throw Error();
+    if (rep === "string")
+      return v.representation === "hex" ||
+        v.representation === "bin" ||
+        v.representation === "oct"
+        ? this.component(v, v.representation)
+        : this.numberText(v);
+    const base =
+      rep === "hex" ? 16 : rep === "bin" ? 2 : rep === "oct" ? 8 : 10;
+    if (v.n < 0n) throw Error();
+    let x = v.n.toString(base).toUpperCase();
+    const width = this.widthIn(v, rep as Numeric["representation"]);
+    if (width !== undefined) x = x.padStart(width, "0");
+    else if (rep === "hex" && x.length % 2) x = "0" + x;
+    else if (rep === "bin") x = x.padStart(Math.ceil(x.length / 8) * 8, "0");
+    else if (rep === "oct") x = x.padStart(Math.ceil(x.length / 3) * 3, "0");
+    return x;
+  }
+  private index(e: Extract<Expr, { kind: "index" }>, scope: Scope): Value {
+    const v = this.expr(e.target, scope);
+    if (v.type === "undefined") return v;
+    const get = (x: Expr): number | undefined => {
+      const n = this.expr(x, scope);
+      if (!isNum(n) || n.d !== 1n || n.n < 0n) {
+        this.issue("Index must be a non-negative integer", x.range);
+        return;
+      }
+      return Number(n.n);
+    };
+    if (e.index) {
+      if (v.type === "object") {
+        const key = this.expr(e.index, scope);
+        if (key.type !== "string") {
+          this.issue("Object index must be string", e.range);
+          return undef();
+        }
+        const f = v.fields.get(key.value);
+        return f ? this.read(f, e.index.range) : undef();
+      }
+      const i = get(e.index);
+      if (i === undefined) return undef();
+      if (v.type === "array") return v.items[i] ?? undef();
+      if (isNum(v)) return this.bytes(v)[i] ?? undef();
+      this.issue("Indexing strings is not specified in DAMS v0.3", e.range);
+      return undef();
+    }
+    if (e.slice) {
+      const start = get(e.slice.start),
+        end = get(e.slice.end);
+      if (start === undefined || end === undefined) return undef();
+      if (v.type === "array") {
+        const items: Value[] = [];
+        for (let i = start; i < end; i++) items.push(v.items[i] ?? undef());
+        return { type: "array", items };
+      }
+      if (isNum(v)) {
+        const bytes = this.bytes(v),
+          wanted: Value[] = [];
+        for (let i = start; i < end; i++) wanted.push(bytes[i] ?? undef());
+        if (wanted.some((x) => x.type === "undefined"))
+          return { type: "array", items: wanted };
+        const hex = wanted
+          .map((x) => (x as Numeric).n.toString(16).padStart(2, "0"))
+          .join("");
+        return {
+          type: "number",
+          n: BigInt("0x" + hex),
+          d: 1n,
+          representation: v.representation,
+          width: wanted.length * 8,
+        };
+      }
+      this.issue(
+        "Slicing is supported only for arrays and binary data",
+        e.range,
+      );
+      return undef();
+    }
+    return undef();
+  }
+  private access(e: Extract<Expr, { kind: "access" }>, scope: Scope): Value {
+    const target = this.expr(e.target, scope);
+    if (target.type === "undefined") return target;
+    if (target.type !== "object") {
+      this.issue("Path access requires object", e.range);
+      return undef();
+    }
+    if (target.dict) {
+      this.issue("dict fields require string indexing", e.range);
+      return undef();
+    }
+    const field = target.fields.get(e.key);
+    return field ? this.read(field, e.keyRange) : undef();
+  }
+  private widthIn(
+    v: Numeric,
+    representation: Numeric["representation"],
+  ): number | undefined {
+    if (v.width === undefined) return undefined;
+    const targetBits =
+      representation === "hex"
+        ? 4
+        : representation === "bin"
+          ? 1
+          : representation === "oct"
+            ? 3
+            : undefined;
+    return targetBits === undefined
+      ? undefined
+      : Math.ceil(v.width / targetBits);
+  }
+  private bytes(v: Numeric): Value[] {
+    if (v.d !== 1n || v.n < 0n) return [];
+    const digits = this.widthIn(v, "hex") ?? v.n.toString(16).length;
+    const hex = v.n.toString(16).padStart(Math.ceil(digits / 2) * 2, "0");
+    return (hex.match(/../g) ?? []).map((x) => ({
+      type: "number",
+      n: BigInt("0x" + x),
+      d: 1n,
+      representation: "hex",
+      width: 8,
+    }));
+  }
+  private convert(v: Value, a: string, r: Range): Value {
+    if (v.type === "undefined") return v;
+    if (a === "object")
+      return v.type === "object"
+        ? v
+        : (this.issue("Expected object", r), undef());
+    if (a === "dict") {
+      if (v.type !== "object" || !v.dict) {
+        this.issue("Cannot narrow object to dict", r);
+        return undef();
+      }
+      return v;
+    }
+    if (a === "array")
+      return v.type === "array"
+        ? v
+        : (this.issue("Expected array", r), undef());
+    if (a === "string" || a === "str")
+      return v.type === "string"
+        ? v
+        : { type: "string", value: this.display(v) };
+    if (a === "bool")
+      return v.type === "bool" ? v : (this.issue("Expected bool", r), undef());
+    if (
+      a === "int" ||
+      a === "float" ||
+      a === "hex" ||
+      a === "bin" ||
+      a === "oct"
+    ) {
+      if (
+        !isNum(v) ||
+        (a === "int" && v.d !== 1n) ||
+        (a !== "float" && a !== "int" && v.n < 0n)
+      ) {
+        this.issue(`Cannot convert to ${a}`, r);
+        return undef();
+      }
+      return { ...v, representation: a };
+    }
+    this.issue(`Unsupported annotation '${a}'`, r);
+    return undef();
+  }
+  numberText(v: Numeric): string {
+    if (v.d === 1n) return v.n.toString();
+    let n = v.n < 0n ? -v.n : v.n,
+      d = v.d,
+      twos = 0,
+      fives = 0;
+    while (d % 2n === 0n) {
+      d /= 2n;
+      twos++;
+    }
+    while (d % 5n === 0n) {
+      d /= 5n;
+      fives++;
+    }
+    if (d === 1n) {
+      const scale = Math.max(twos, fives);
+      const x = n * 2n ** BigInt(scale - twos) * 5n ** BigInt(scale - fives);
+      const raw = x.toString().padStart(scale + 1, "0");
+      return (
+        (v.n < 0n ? "-" : "") +
+        raw.slice(0, -scale) +
+        "." +
+        raw.slice(-scale).replace(/0+$/, "")
+      );
+    }
+    return this.round34(v);
+  }
+  private round34(v: Numeric): string {
+    const sign = v.n < 0n ? "-" : "";
+    let n = v.n < 0n ? -v.n : v.n;
+    const integer = n / v.d;
+    let digits = integer.toString();
+    if (integer !== 0n) {
+      const scale = Math.max(0, 34 - digits.length);
+      const q = (n * 10n ** BigInt(scale)) / v.d;
+      const rem = (n * 10n ** BigInt(scale)) % v.d;
+      let z = q;
+      if (rem * 2n > v.d || (rem * 2n === v.d && q % 2n === 1n)) z++;
+      const s = z.toString();
+      return sign + (scale ? s.slice(0, -scale) + "." + s.slice(-scale) : s);
+    }
+    let leading = 0;
+    while (n * 10n ** BigInt(leading + 1) < v.d) leading++;
+    const scale = 34 + leading;
+    let q = (n * 10n ** BigInt(scale)) / v.d;
+    const rem = (n * 10n ** BigInt(scale)) % v.d;
+    if (rem * 2n > v.d || (rem * 2n === v.d && q % 2n === 1n)) q++;
+    return sign + "0." + "0".repeat(leading) + q.toString().padStart(34, "0");
+  }
+  formatValue(v: Value): string {
+    if (isNum(v)) {
+      if (
+        v.representation === "hex" ||
+        v.representation === "bin" ||
+        v.representation === "oct"
+      ) {
+        const base =
+          v.representation === "hex" ? 16 : v.representation === "bin" ? 2 : 8;
+        const prefix =
+          v.representation === "hex"
+            ? "0x"
+            : v.representation === "bin"
+              ? "0b"
+              : "0o";
+        const width = this.widthIn(v, v.representation);
+        return (
+          prefix +
+          v.n
+            .toString(base)
+            .toUpperCase()
+            .padStart(width ?? 0, "0")
+        );
+      }
+      return this.numberText(v);
+    }
+    if (v.type === "string") return JSON.stringify(v.value);
+    if (v.type === "bool") return String(v.value);
+    if (v.type === "null" || v.type === "undefined") return v.type;
+    if (v.type === "array")
+      return `[${v.items.length} item${v.items.length === 1 ? "" : "s"}]`;
+    return v.dict ? "dict" : "object";
+  }
+  private terminating(denominator: bigint): boolean {
+    let d = denominator;
+    while (d % 2n === 0n) d /= 2n;
+    while (d % 5n === 0n) d /= 5n;
+    return d === 1n;
+  }
+  private display(v: Value): string {
+    return this.formatValue(v);
+  }
 }

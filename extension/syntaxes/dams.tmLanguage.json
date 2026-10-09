@@ -1,3 +1,41 @@
 {
-  "scopeName":"source.dams","patterns":[{"include":"#comment"},{"include":"#string"},{"include":"#key"},{"include":"#annotation"},{"include":"#number"},{"include":"#keyword"},{"include":"#path"},{"include":"#operator"}],
-  "repository":{"comment":{"match":"//.*$","name":"comment.line.double-slash.dams"},"string":{"match":"\"(?:\\\\[\\\"\\\\]|[^\"\\n])*\"","name":"string.quoted.double.dams"},"key":{"match":"(?:^|[,{\\n]\\s*)([A-Za-z_][A-Za-z0-9_]*|\"(?:\\\\.|[^\"])*\")(?=\\s*(?:\\([A-Za-z_][A-Za-z0-9_]*\\))?\\s*:)","captures":{"1":{"name":"entity.name.tag.dams"}}},"annotation":{"match":"\\([A-Za-z_][A-Za-z0-9_]*\\)","name":"storage.type.annotation.dams"},"number":{"match":"(?<![A-Za-z0-9_])(?:0[xX][0-9A-Fa-f]+|0[bB][01]+|0[oO][0-7]+|\\d+\\.\\d+|\\d+)","name":"constant.numeric.dams"},"keyword":{"match":"\\b(?:true|false|null|undefined)\\b","name":"constant.language.dams"},"path":{"match":"\\.?[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+","name":"variable.other.property.dams"},"operator":{"match":"[+\\-*/&]","name":"keyword.operator.dams"}}}
+  "scopeName": "source.dams",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#key" },
+    { "include": "#annotation" },
+    { "include": "#number" },
+    { "include": "#keyword" },
+    { "include": "#path" },
+    { "include": "#operator" }
+  ],
+  "repository": {
+    "comment": { "match": "//.*$", "name": "comment.line.double-slash.dams" },
+    "string": {
+      "match": "\"(?:\\\\[\\\"\\\\]|[^\"\\n])*\"",
+      "name": "string.quoted.double.dams"
+    },
+    "key": {
+      "match": "(?:^|[,{\\n]\\s*)([A-Za-z_][A-Za-z0-9_]*|\"(?:\\\\.|[^\"])*\")(?=\\s*(?:\\([A-Za-z_][A-Za-z0-9_]*\\))?\\s*:)",
+      "captures": { "1": { "name": "entity.name.tag.dams" } }
+    },
+    "annotation": {
+      "match": "\\([A-Za-z_][A-Za-z0-9_]*\\)",
+      "name": "storage.type.annotation.dams"
+    },
+    "number": {
+      "match": "(?<![A-Za-z0-9_])(?:0[xX][0-9A-Fa-f]+|0[bB][01]+|0[oO][0-7]+|\\d+\\.\\d+|\\d+)",
+      "name": "constant.numeric.dams"
+    },
+    "keyword": {
+      "match": "\\b(?:true|false|null|undefined)\\b",
+      "name": "constant.language.dams"
+    },
+    "path": {
+      "match": "\\.?[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+",
+      "name": "variable.other.property.dams"
+    },
+    "operator": { "match": "[+\\-*/&]", "name": "keyword.operator.dams" }
+  }
+}

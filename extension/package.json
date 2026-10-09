@@ -1,6 +1,98 @@
 {
-  "name": "dams", "displayName": "DAMS", "version": "0.2.3", "publisher": "dams", "icon": "media/dams-extension-icon.png", "engines": {"vscode": "^1.95.0"}, "categories": ["Programming Languages"], "main": "./dist/extension.js",
-  "activationEvents": ["onStartupFinished", "onLanguage:dams", "onCommand:dams.bake", "onCommand:dams.preview", "onCommand:dams.validate", "onCommand:dams.graph"],
-  "extensionKind": ["workspace"],
-  "contributes": {"languages":[{"id":"dams","aliases":["DAMS"],"extensions":[".dams"],"configuration":"./language-configuration.json","icon":{"light":"media/dams-file-icon.png","dark":"media/dams-file-icon.png"}}],"grammars":[{"language":"dams","scopeName":"source.dams","path":"./syntaxes/dams.tmLanguage.json"}],"commands":[{"command":"dams.bake","title":"DAMS: Bake Current File","icon":"$(flame)"},{"command":"dams.preview","title":"DAMS: Preview Baked Result","icon":"$(preview)"},{"command":"dams.validate","title":"DAMS: Validate Current File"},{"command":"dams.graph","title":"DAMS: Show Dependency Graph","icon":"$(graph)"}],"menus":{"editor/title":[{"command":"dams.preview","when":"resourceLangId == dams && resourceScheme == file","group":"navigation@1"},{"command":"dams.bake","when":"resourceLangId == dams && resourceScheme == file","group":"navigation@2"},{"command":"dams.graph","when":"resourceLangId == dams && resourceScheme == file","group":"navigation@3"}]}}
+  "name": "dams",
+  "displayName": "DAMS",
+  "version": "0.2.3",
+  "publisher": "Lekasnet",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LekasNet/DAMS.git"
+  },
+  "homepage": "https://github.com/LekasNet/DAMS",
+  "bugs": {
+    "url": "https://github.com/LekasNet/DAMS/issues"
+  },
+  "icon": "media/dams-extension-icon.png",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onLanguage:dams",
+    "onCommand:dams.bake",
+    "onCommand:dams.preview",
+    "onCommand:dams.validate",
+    "onCommand:dams.graph"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "dams",
+        "aliases": [
+          "DAMS"
+        ],
+        "extensions": [
+          ".dams"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "media/dams-file-icon.png",
+          "dark": "media/dams-file-icon.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "dams",
+        "scopeName": "source.dams",
+        "path": "./syntaxes/dams.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "dams.bake",
+        "title": "DAMS: Bake Current File",
+        "icon": "$(flame)"
+      },
+      {
+        "command": "dams.preview",
+        "title": "DAMS: Preview Baked Result",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "dams.validate",
+        "title": "DAMS: Validate Current File"
+      },
+      {
+        "command": "dams.graph",
+        "title": "DAMS: Show Dependency Graph",
+        "icon": "$(graph)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "dams.preview",
+          "when": "resourceLangId == dams && resourceScheme == file",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dams.bake",
+          "when": "resourceLangId == dams && resourceScheme == file",
+          "group": "navigation@2"
+        },
+        {
+          "command": "dams.graph",
+          "when": "resourceLangId == dams && resourceScheme == file",
+          "group": "navigation@3"
+        }
+      ]
+    }
+  }
 }

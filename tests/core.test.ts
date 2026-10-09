@@ -1,3 +1,72 @@
-import { describe, expect, it } from 'vitest';
-import { analyze, bake, isBakedDocument } from '../packages/core/src/index';
-describe('DAMS baking',()=>{it('resolves relative paths and arithmetic',()=>{const r=bake('Data: { A: 10\nB: .A * 2\nC: .B + 5 }');expect(r.diagnostics).toEqual([]);expect(r.text).toContain('C: 25');});it('preserves binary composition',()=>{const r=bake('A: 0x22\nB: 0xF190\nC: A & B');expect(r.diagnostics).toEqual([]);expect(r.text).toContain('C: 0x22F190');});it('preserves leading binary width',()=>{expect(bake('A: 0x0022').text).toContain('0x0022');});it('preserves BIN/OCT byte width and binary slices',()=>{const r=bake('A: 0b1\nB: 0o7\nC: 0x001122[1:3]');expect(r.text).toContain('A: 0b00000001');expect(r.text).toContain('B: 0o007');expect(r.text).toContain('C: 0x1122');});it('rounds non-terminating division to 34 significant digits',()=>{expect(bake('A: 1 / 3').text).toContain('0.3333333333333333333333333333333333');});it('resolves access following a string-key index',()=>{const r=bake('Dictionary (dict): { "Without warning": { Value: 1 } }\nResult: Dictionary["Without warning"].Value');expect(r.diagnostics).toEqual([]);expect(r.text).toContain('Result: 1');});it('reports division by zero',()=>{const r=bake('Values: {\nA: 10 / 0\nB: .Missing + 1\n}');expect(r.text).toBeUndefined();expect(r.diagnostics.some(d=>d.message==='Division by zero')).toBe(true);});it('does not classify an incomplete expression as Baked',()=>{for(const source of ['A: 1\nB: 10 /','SyntaxTest: {}\nDictionary: {}\nObjectConcatination: .SyntaxTest & Dictionary /']){const a=analyze(source);expect(a.diagnostics.length).toBeGreaterThan(0);expect(isBakedDocument(a.document)).toBe(false);}});it('tracks fields dependent on failed evaluation',()=>{const a=analyze('Data: { A: 1 / 0\nB: .A + 1\nC: 3 * 2 }');const members=(a.document.members[0]!.expression as {members: import('../packages/core/src/ast').Member[]}).members;expect(a.evaluator.hasEvaluationError(members[0]!)).toBe(true);expect(a.evaluator.hasEvaluationError(members[1]!)).toBe(true);expect(a.evaluator.hasEvaluationError(members[2]!)).toBe(false);});it('keeps missing paths undefined',()=>{const r=bake('A: Missing.Path');expect(r.text).toContain('A: undefined');});it('rejects dict identifiers',()=>{const r=bake('Map (dict): { A: 1 }');expect(r.text).toBeUndefined();expect(r.diagnostics[0]?.message).toContain('dict');});});
+import { describe, expect, it } from "vitest";
+import { analyze, bake, isBakedDocument } from "../packages/core/src/index";
+describe("DAMS baking", () => {
+  it("resolves relative paths and arithmetic", () => {
+    const r = bake("Data: { A: 10\nB: .A * 2\nC: .B + 5 }");
+    expect(r.diagnostics).toEqual([]);
+    expect(r.text).toContain("C: 25");
+  });
+  it("preserves binary composition", () => {
+    const r = bake("A: 0x22\nB: 0xF190\nC: A & B");
+    expect(r.diagnostics).toEqual([]);
+    expect(r.text).toContain("C: 0x22F190");
+  });
+  it("preserves leading binary width", () => {
+    expect(bake("A: 0x0022").text).toContain("0x0022");
+  });
+  it("preserves BIN/OCT byte width and binary slices", () => {
+    const r = bake("A: 0b1\nB: 0o7\nC: 0x001122[1:3]");
+    expect(r.text).toContain("A: 0b00000001");
+    expect(r.text).toContain("B: 0o007");
+    expect(r.text).toContain("C: 0x1122");
+  });
+  it("rounds non-terminating division to 34 significant digits", () => {
+    expect(bake("A: 1 / 3").text).toContain(
+      "0.3333333333333333333333333333333333",
+    );
+  });
+  it("resolves access following a string-key index", () => {
+    const r = bake(
+      'Dictionary (dict): { "Without warning": { Value: 1 } }\nResult: Dictionary["Without warning"].Value',
+    );
+    expect(r.diagnostics).toEqual([]);
+    expect(r.text).toContain("Result: 1");
+  });
+  it("reports division by zero", () => {
+    const r = bake("Values: {\nA: 10 / 0\nB: .Missing + 1\n}");
+    expect(r.text).toBeUndefined();
+    expect(r.diagnostics.some((d) => d.message === "Division by zero")).toBe(
+      true,
+    );
+  });
+  it("does not classify an incomplete expression as Baked", () => {
+    for (const source of [
+      "A: 1\nB: 10 /",
+      "SyntaxTest: {}\nDictionary: {}\nObjectConcatination: .SyntaxTest & Dictionary /",
+    ]) {
+      const a = analyze(source);
+      expect(a.diagnostics.length).toBeGreaterThan(0);
+      expect(isBakedDocument(a.document)).toBe(false);
+    }
+  });
+  it("tracks fields dependent on failed evaluation", () => {
+    const a = analyze("Data: { A: 1 / 0\nB: .A + 1\nC: 3 * 2 }");
+    const members = (
+      a.document.members[0]!.expression as {
+        members: import("../packages/core/src/ast").Member[];
+      }
+    ).members;
+    expect(a.evaluator.hasEvaluationError(members[0]!)).toBe(true);
+    expect(a.evaluator.hasEvaluationError(members[1]!)).toBe(true);
+    expect(a.evaluator.hasEvaluationError(members[2]!)).toBe(false);
+  });
+  it("keeps missing paths undefined", () => {
+    const r = bake("A: Missing.Path");
+    expect(r.text).toContain("A: undefined");
+  });
+  it("rejects dict identifiers", () => {
+    const r = bake("Map (dict): { A: 1 }");
+    expect(r.text).toBeUndefined();
+    expect(r.diagnostics[0]?.message).toContain("dict");
+  });
+});

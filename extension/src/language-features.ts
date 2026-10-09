@@ -1,30 +1,470 @@
-import * as vscode from 'vscode';
-import { Document, Expr, Member, ReferenceExpr, Value, analyze, isBakedDocument } from '../../packages/core/src/index';
+import * as vscode from "vscode";
+import {
+  Document,
+  Expr,
+  Member,
+  ReferenceExpr,
+  Value,
+  analyze,
+  isBakedDocument,
+} from "../../packages/core/src/index";
 
-type Scope={ members:Member[]; parent?:Scope; children:Map<Member,Scope> };
-type PathSite={ expression:Expr; scope:Scope };
-type PathSegment={ key:string; range:vscode.Range };
-type ResolvedPath={ members:Member[]; segments:PathSegment[] };
-type Model={ root:Scope; memberScopes:Map<Member,Scope>; paths:PathSite[] };
-const toRange=(r:{start:{line:number;column:number};end:{line:number;column:number}})=>new vscode.Range(r.start.line,r.start.column,r.end.line,r.end.column);
-const contains=(r:{start:{offset:number};end:{offset:number}},offset:number)=>r.start.offset<=offset&&offset<=r.end.offset;
+type Scope = {
+  members: Member[];
+  parent?: Scope;
+  children: Map<Member, Scope>;
+};
+type PathSite = { expression: Expr; scope: Scope };
+type PathSegment = { key: string; range: vscode.Range };
+type ResolvedPath = { members: Member[]; segments: PathSegment[] };
+type Model = {
+  root: Scope;
+  memberScopes: Map<Member, Scope>;
+  paths: PathSite[];
+};
+const toRange = (r: {
+  start: { line: number; column: number };
+  end: { line: number; column: number };
+}) => new vscode.Range(r.start.line, r.start.column, r.end.line, r.end.column);
+const contains = (
+  r: { start: { offset: number }; end: { offset: number } },
+  offset: number,
+) => r.start.offset <= offset && offset <= r.end.offset;
 
-function modelOf(document:Document):Model {const root:Scope={members:document.members,children:new Map()};const memberScopes=new Map<Member,Scope>();const paths:PathSite[]=[];const visitExpr=(expr:Expr,scope:Scope)=>{if(expr.kind==='reference'){paths.push({expression:expr,scope});return;}if(expr.kind==='access'){paths.push({expression:expr,scope});visitExpr(expr.target,scope);return;}if(expr.kind==='index'){if(expr.index?.kind==='literal'&&expr.index.representation==='string')paths.push({expression:expr,scope});visitExpr(expr.target,scope);if(expr.index)visitExpr(expr.index,scope);if(expr.slice){visitExpr(expr.slice.start,scope);visitExpr(expr.slice.end,scope);}return;}if(expr.kind==='object'){visitMembers(expr.members,scope);return;}if(expr.kind==='array'){expr.items.forEach(item=>visitExpr(item,scope));return;}if(expr.kind==='binary'){visitExpr(expr.left,scope);visitExpr(expr.right,scope);return;}if(expr.kind==='unary')visitExpr(expr.expression,scope);};const visitMembers=(members:Member[],parent:Scope)=>{for(const member of members){memberScopes.set(member,parent);if(member.expression.kind==='object'){const child:Scope={members:member.expression.members,parent,children:new Map()};parent.children.set(member,child);visitMembers(member.expression.members,child);}else visitExpr(member.expression,parent);}};visitMembers(document.members,root);return {root,memberScopes,paths};}
-function memberByName(scope:Scope,name:string){return scope.members.find(member=>member.key.text===name);}
-function childScope(model:Model,member:Member){return model.memberScopes.get(member)?.children.get(member);}
-function resolveParts(model:Model,scope:Scope,parts:(string|{key:string})[],relative:boolean):Member[]|undefined {let current=relative?scope:model.root;const path:Member[]=[];for(const raw of parts){const name=typeof raw==='string'?raw:raw.key;const member=memberByName(current,name);if(!member)return undefined;path.push(member);const child=childScope(model,member);if(child)current=child;}return path;}
-function resolvePath(model:Model,scope:Scope,expression:Expr,document:vscode.TextDocument):ResolvedPath|undefined {if(expression.kind==='reference'){const members=resolveParts(model,scope,expression.parts,expression.relative);if(!members)return undefined;return {members,segments:partOffsets(document,expression).map((range,index)=>({key:typeof expression.parts[index]==='string'?expression.parts[index] as string:(expression.parts[index] as {key:string}).key,range}))};}if(expression.kind==='access'){const parent=resolvePath(model,scope,expression.target,document);if(!parent)return undefined;const current=childScope(model,parent.members.at(-1)!);const member=current&&memberByName(current,expression.key);if(!member)return undefined;return {members:[...parent.members,member],segments:[...parent.segments,{key:expression.key,range:toRange(expression.keyRange)}]};}if(expression.kind==='index'&&expression.index?.kind==='literal'&&expression.index.representation==='string'){const parent=resolvePath(model,scope,expression.target,document);if(!parent)return undefined;const key=expression.index.value as string;const current=childScope(model,parent.members.at(-1)!);const member=current&&memberByName(current,key);if(!member)return undefined;return {members:[...parent.members,member],segments:[...parent.segments,{key,range:toRange(expression.index.range)}]};}return undefined;}
-function declarationAt(model:Model,document:vscode.TextDocument,offset:number):Member|undefined {for(const [member] of model.memberScopes)if(contains(member.key.range,offset))return member;const site=model.paths.filter(candidate=>contains(candidate.expression.range,offset)).sort((a,b)=>(a.expression.range.end.offset-a.expression.range.start.offset)-(b.expression.range.end.offset-b.expression.range.start.offset))[0];return site?resolvePath(model,site.scope,site.expression,document)?.members.at(-1):undefined;}
-function partOffsets(document:vscode.TextDocument,reference:ReferenceExpr):vscode.Range[]{const text=document.getText(toRange(reference.range));const result:vscode.Range[]=[];const matcher=/[A-Za-z_][A-Za-z0-9_]*/g;let match:RegExpExecArray|null;while((match=matcher.exec(text))){const start=document.positionAt(reference.range.start.offset+match.index);const end=document.positionAt(reference.range.start.offset+match.index+match[0].length);result.push(new vscode.Range(start,end));}return result;}
-function typeOf(value:Value|undefined):string {if(!value)return 'undefined';if(value.type==='number')return value.representation;if(value.type==='string')return 'string';if(value.type==='bool')return 'bool';if(value.type==='object')return value.dict?'dict':'object';return value.type;}
-function scopeAt(model:Model,offset:number):Scope {const candidates=[...model.memberScopes.entries()].filter(([member])=>contains(member.range,offset)).sort((a,b)=>(a[0].range.end.offset-a[0].range.start.offset)-(b[0].range.end.offset-b[0].range.start.offset));return candidates[0]?.[1]??model.root;}
-function completionPath(prefix:string):{parts:string[];relative:boolean}|undefined {const match=prefix.match(/((?:\.)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\.[A-Za-z_][A-Za-z0-9_]*)|(?:\["(?:\\.|[^"\\])*"\]))*)\.$/);if(!match)return undefined;const raw=match[1]!;const relative=raw.startsWith('.');const path=relative?raw.slice(1):raw;const first=path.match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];if(!first)return undefined;const parts=[first];const segment=/\.([A-Za-z_][A-Za-z0-9_]*)|\[("(?:\\.|[^"\\])*")\]/g;let found:RegExpExecArray|null;while((found=segment.exec(path))){if(found[1])parts.push(found[1]);else {try{parts.push(JSON.parse(found[2]!));}catch{return undefined;}}}return {parts,relative};}
+function modelOf(document: Document): Model {
+  const root: Scope = { members: document.members, children: new Map() };
+  const memberScopes = new Map<Member, Scope>();
+  const paths: PathSite[] = [];
+  const visitExpr = (expr: Expr, scope: Scope) => {
+    if (expr.kind === "reference") {
+      paths.push({ expression: expr, scope });
+      return;
+    }
+    if (expr.kind === "access") {
+      paths.push({ expression: expr, scope });
+      visitExpr(expr.target, scope);
+      return;
+    }
+    if (expr.kind === "index") {
+      if (
+        expr.index?.kind === "literal" &&
+        expr.index.representation === "string"
+      )
+        paths.push({ expression: expr, scope });
+      visitExpr(expr.target, scope);
+      if (expr.index) visitExpr(expr.index, scope);
+      if (expr.slice) {
+        visitExpr(expr.slice.start, scope);
+        visitExpr(expr.slice.end, scope);
+      }
+      return;
+    }
+    if (expr.kind === "object") {
+      visitMembers(expr.members, scope);
+      return;
+    }
+    if (expr.kind === "array") {
+      expr.items.forEach((item) => visitExpr(item, scope));
+      return;
+    }
+    if (expr.kind === "binary") {
+      visitExpr(expr.left, scope);
+      visitExpr(expr.right, scope);
+      return;
+    }
+    if (expr.kind === "unary") visitExpr(expr.expression, scope);
+  };
+  const visitMembers = (members: Member[], parent: Scope) => {
+    for (const member of members) {
+      memberScopes.set(member, parent);
+      if (member.expression.kind === "object") {
+        const child: Scope = {
+          members: member.expression.members,
+          parent,
+          children: new Map(),
+        };
+        parent.children.set(member, child);
+        visitMembers(member.expression.members, child);
+      } else visitExpr(member.expression, parent);
+    }
+  };
+  visitMembers(document.members, root);
+  return { root, memberScopes, paths };
+}
+function memberByName(scope: Scope, name: string) {
+  return scope.members.find((member) => member.key.text === name);
+}
+function childScope(model: Model, member: Member) {
+  return model.memberScopes.get(member)?.children.get(member);
+}
+function resolveParts(
+  model: Model,
+  scope: Scope,
+  parts: (string | { key: string })[],
+  relative: boolean,
+): Member[] | undefined {
+  let current = relative ? scope : model.root;
+  const path: Member[] = [];
+  for (const raw of parts) {
+    const name = typeof raw === "string" ? raw : raw.key;
+    const member = memberByName(current, name);
+    if (!member) return undefined;
+    path.push(member);
+    const child = childScope(model, member);
+    if (child) current = child;
+  }
+  return path;
+}
+function resolvePath(
+  model: Model,
+  scope: Scope,
+  expression: Expr,
+  document: vscode.TextDocument,
+): ResolvedPath | undefined {
+  if (expression.kind === "reference") {
+    const members = resolveParts(
+      model,
+      scope,
+      expression.parts,
+      expression.relative,
+    );
+    if (!members) return undefined;
+    return {
+      members,
+      segments: partOffsets(document, expression).map((range, index) => ({
+        key:
+          typeof expression.parts[index] === "string"
+            ? (expression.parts[index] as string)
+            : (expression.parts[index] as { key: string }).key,
+        range,
+      })),
+    };
+  }
+  if (expression.kind === "access") {
+    const parent = resolvePath(model, scope, expression.target, document);
+    if (!parent) return undefined;
+    const current = childScope(model, parent.members.at(-1)!);
+    const member = current && memberByName(current, expression.key);
+    if (!member) return undefined;
+    return {
+      members: [...parent.members, member],
+      segments: [
+        ...parent.segments,
+        { key: expression.key, range: toRange(expression.keyRange) },
+      ],
+    };
+  }
+  if (
+    expression.kind === "index" &&
+    expression.index?.kind === "literal" &&
+    expression.index.representation === "string"
+  ) {
+    const parent = resolvePath(model, scope, expression.target, document);
+    if (!parent) return undefined;
+    const key = expression.index.value as string;
+    const current = childScope(model, parent.members.at(-1)!);
+    const member = current && memberByName(current, key);
+    if (!member) return undefined;
+    return {
+      members: [...parent.members, member],
+      segments: [
+        ...parent.segments,
+        { key, range: toRange(expression.index.range) },
+      ],
+    };
+  }
+  return undefined;
+}
+function declarationAt(
+  model: Model,
+  document: vscode.TextDocument,
+  offset: number,
+): Member | undefined {
+  for (const [member] of model.memberScopes)
+    if (contains(member.key.range, offset)) return member;
+  const site = model.paths
+    .filter((candidate) => contains(candidate.expression.range, offset))
+    .sort(
+      (a, b) =>
+        a.expression.range.end.offset -
+        a.expression.range.start.offset -
+        (b.expression.range.end.offset - b.expression.range.start.offset),
+    )[0];
+  return site
+    ? resolvePath(model, site.scope, site.expression, document)?.members.at(-1)
+    : undefined;
+}
+function partOffsets(
+  document: vscode.TextDocument,
+  reference: ReferenceExpr,
+): vscode.Range[] {
+  const text = document.getText(toRange(reference.range));
+  const result: vscode.Range[] = [];
+  const matcher = /[A-Za-z_][A-Za-z0-9_]*/g;
+  let match: RegExpExecArray | null;
+  while ((match = matcher.exec(text))) {
+    const start = document.positionAt(
+      reference.range.start.offset + match.index,
+    );
+    const end = document.positionAt(
+      reference.range.start.offset + match.index + match[0].length,
+    );
+    result.push(new vscode.Range(start, end));
+  }
+  return result;
+}
+function typeOf(value: Value | undefined): string {
+  if (!value) return "undefined";
+  if (value.type === "number") return value.representation;
+  if (value.type === "string") return "string";
+  if (value.type === "bool") return "bool";
+  if (value.type === "object") return value.dict ? "dict" : "object";
+  return value.type;
+}
+function scopeAt(model: Model, offset: number): Scope {
+  const candidates = [...model.memberScopes.entries()]
+    .filter(([member]) => contains(member.range, offset))
+    .sort(
+      (a, b) =>
+        a[0].range.end.offset -
+        a[0].range.start.offset -
+        (b[0].range.end.offset - b[0].range.start.offset),
+    );
+  return candidates[0]?.[1] ?? model.root;
+}
+function completionPath(
+  prefix: string,
+): { parts: string[]; relative: boolean } | undefined {
+  const match = prefix.match(
+    /((?:\.)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\.[A-Za-z_][A-Za-z0-9_]*)|(?:\["(?:\\.|[^"\\])*"\]))*)\.$/,
+  );
+  if (!match) return undefined;
+  const raw = match[1]!;
+  const relative = raw.startsWith(".");
+  const path = relative ? raw.slice(1) : raw;
+  const first = path.match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
+  if (!first) return undefined;
+  const parts = [first];
+  const segment = /\.([A-Za-z_][A-Za-z0-9_]*)|\[("(?:\\.|[^"\\])*")\]/g;
+  let found: RegExpExecArray | null;
+  while ((found = segment.exec(path))) {
+    if (found[1]) parts.push(found[1]);
+    else {
+      try {
+        parts.push(JSON.parse(found[2]!));
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return { parts, relative };
+}
 
-export type DocumentAnalysis=ReturnType<typeof analyze>;
-export function languageProviders(getAnalysis:(document:vscode.TextDocument)=>DocumentAnalysis){return [
- vscode.languages.registerCompletionItemProvider('dams',{provideCompletionItems(document,position){const analysis=getAnalysis(document);const model=modelOf(analysis.document);const left=document.getText(new vscode.Range(new vscode.Position(0,0),position));const path=completionPath(left);if(!path)return [];const start=path.relative?scopeAt(model,document.offsetAt(position)):model.root;const member=resolveParts(model,start,path.parts,path.relative)?.at(-1);const scope=member?childScope(model,member):undefined;return scope?.members.map(item=>{if(!item.key.quoted)return new vscode.CompletionItem(item.key.text,vscode.CompletionItemKind.Field);const text=JSON.stringify(item.key.text);const completion=new vscode.CompletionItem(item.key.text,vscode.CompletionItemKind.Field);completion.detail=`String key → [${text}]`;completion.filterText=item.key.text;completion.insertText=`[${text}]`;completion.additionalTextEdits=[vscode.TextEdit.delete(new vscode.Range(position.translate(0,-1),position))];return completion;})??[];}},'.'),
- vscode.languages.registerDefinitionProvider('dams',{provideDefinition(document,position){const analysis=getAnalysis(document);const target=declarationAt(modelOf(analysis.document),document,document.offsetAt(position));return target?new vscode.Location(document.uri,toRange(target.key.range)):undefined;}}),
- vscode.languages.registerRenameProvider('dams',{prepareRename(document,position){const analysis=getAnalysis(document);const target=declarationAt(modelOf(analysis.document),document,document.offsetAt(position));return target?toRange(target.key.range):undefined;},provideRenameEdits(document,position,newName){const analysis=getAnalysis(document);const model=modelOf(analysis.document);const target=declarationAt(model,document,document.offsetAt(position));if(!target)return;const isStringKey=target.key.quoted;if(!isStringKey&&!/^[A-Za-z_][A-Za-z0-9_]*$/.test(newName))throw new Error('DAMS identifiers must match [A-Za-z_][A-Za-z0-9_]*');if(isStringKey&&/[\r\n]/.test(newName))throw new Error('DAMS string keys cannot contain a line break');const owner=model.memberScopes.get(target)!;if(owner.members.some(member=>member!==target&&member.key.text===newName))throw new Error(`Key '${newName}' already exists in this object`);const replacement=isStringKey?JSON.stringify(newName):newName;const edit=new vscode.WorkspaceEdit();const edited=new Set<string>();const replace=(r:vscode.Range)=>{const id=`${r.start.line}:${r.start.character}-${r.end.line}:${r.end.character}`;if(!edited.has(id)){edited.add(id);edit.replace(document.uri,r,replacement);}};replace(toRange(target.key.range));for(const site of model.paths){const path=resolvePath(model,site.scope,site.expression,document);if(!path)continue;path.members.forEach((member,index)=>{if(member===target){const segment=path.segments[index];if(segment)replace(segment.range);}});}return edit;}}),
- vscode.languages.registerDocumentSymbolProvider('dams',{provideDocumentSymbols(document){const analysis=getAnalysis(document);const symbols=(members:Member[]):vscode.DocumentSymbol[]=>members.map(member=>{const children=member.expression.kind==='object'?symbols(member.expression.members):[];return new vscode.DocumentSymbol(member.key.text,member.annotation??'',children.length?vscode.SymbolKind.Object:vscode.SymbolKind.Field,toRange(member.range),toRange(member.key.range));});return symbols(analysis.document.members);}}),
- vscode.languages.registerInlayHintsProvider('dams',{provideInlayHints(document){const analysis=getAnalysis(document);const hasErrors=analysis.diagnostics.some(diagnostic=>diagnostic.severity==='error');if(!hasErrors&&isBakedDocument(analysis.document))return [];const hints:vscode.InlayHint[]=[];const source=document.getText();const overlapsError=(member:Member)=>analysis.diagnostics.some(diagnostic=>diagnostic.severity==='error'&&diagnostic.range.start.offset<=member.range.end.offset&&member.range.start.offset<=diagnostic.range.end.offset);const visit=(members:Member[])=>members.forEach(member=>{const value=analysis.evaluator.getMemberValue(member);const unavailable=analysis.evaluator.hasEvaluationError(member)||overlapsError(member);if(!unavailable&&!member.annotation){const colonOffset=source.indexOf(':',member.key.range.end.offset);if(colonOffset>=0){const hint=new vscode.InlayHint(document.positionAt(colonOffset),` (${typeOf(value)})`,vscode.InlayHintKind.Type);hint.paddingRight=true;hints.push(hint);}}const computed=!['literal','object','array'].includes(member.expression.kind);const scalar=value&&value.type!=='object'&&value.type!=='array';if(!unavailable&&computed&&scalar){const hint=new vscode.InlayHint(document.positionAt(member.expression.range.end.offset),` = ${analysis.evaluator.formatValue(value)}`,vscode.InlayHintKind.Parameter);hint.paddingLeft=true;hints.push(hint);}if(member.expression.kind==='object')visit(member.expression.members);});visit(analysis.document.members);return hints;}})
-];}
+export type DocumentAnalysis = ReturnType<typeof analyze>;
+export function languageProviders(
+  getAnalysis: (document: vscode.TextDocument) => DocumentAnalysis,
+) {
+  return [
+    vscode.languages.registerCompletionItemProvider(
+      "dams",
+      {
+        provideCompletionItems(document, position) {
+          const analysis = getAnalysis(document);
+          const model = modelOf(analysis.document);
+          const left = document.getText(
+            new vscode.Range(new vscode.Position(0, 0), position),
+          );
+          const path = completionPath(left);
+          if (!path) return [];
+          const start = path.relative
+            ? scopeAt(model, document.offsetAt(position))
+            : model.root;
+          const member = resolveParts(
+            model,
+            start,
+            path.parts,
+            path.relative,
+          )?.at(-1);
+          const scope = member ? childScope(model, member) : undefined;
+          return (
+            scope?.members.map((item) => {
+              if (!item.key.quoted)
+                return new vscode.CompletionItem(
+                  item.key.text,
+                  vscode.CompletionItemKind.Field,
+                );
+              const text = JSON.stringify(item.key.text);
+              const completion = new vscode.CompletionItem(
+                item.key.text,
+                vscode.CompletionItemKind.Field,
+              );
+              completion.detail = `String key → [${text}]`;
+              completion.filterText = item.key.text;
+              completion.insertText = `[${text}]`;
+              completion.additionalTextEdits = [
+                vscode.TextEdit.delete(
+                  new vscode.Range(position.translate(0, -1), position),
+                ),
+              ];
+              return completion;
+            }) ?? []
+          );
+        },
+      },
+      ".",
+    ),
+    vscode.languages.registerDefinitionProvider("dams", {
+      provideDefinition(document, position) {
+        const analysis = getAnalysis(document);
+        const target = declarationAt(
+          modelOf(analysis.document),
+          document,
+          document.offsetAt(position),
+        );
+        return target
+          ? new vscode.Location(document.uri, toRange(target.key.range))
+          : undefined;
+      },
+    }),
+    vscode.languages.registerRenameProvider("dams", {
+      prepareRename(document, position) {
+        const analysis = getAnalysis(document);
+        const target = declarationAt(
+          modelOf(analysis.document),
+          document,
+          document.offsetAt(position),
+        );
+        return target ? toRange(target.key.range) : undefined;
+      },
+      provideRenameEdits(document, position, newName) {
+        const analysis = getAnalysis(document);
+        const model = modelOf(analysis.document);
+        const target = declarationAt(
+          model,
+          document,
+          document.offsetAt(position),
+        );
+        if (!target) return;
+        const isStringKey = target.key.quoted;
+        if (!isStringKey && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(newName))
+          throw new Error("DAMS identifiers must match [A-Za-z_][A-Za-z0-9_]*");
+        if (isStringKey && /[\r\n]/.test(newName))
+          throw new Error("DAMS string keys cannot contain a line break");
+        const owner = model.memberScopes.get(target)!;
+        if (
+          owner.members.some(
+            (member) => member !== target && member.key.text === newName,
+          )
+        )
+          throw new Error(`Key '${newName}' already exists in this object`);
+        const replacement = isStringKey ? JSON.stringify(newName) : newName;
+        const edit = new vscode.WorkspaceEdit();
+        const edited = new Set<string>();
+        const replace = (r: vscode.Range) => {
+          const id = `${r.start.line}:${r.start.character}-${r.end.line}:${r.end.character}`;
+          if (!edited.has(id)) {
+            edited.add(id);
+            edit.replace(document.uri, r, replacement);
+          }
+        };
+        replace(toRange(target.key.range));
+        for (const site of model.paths) {
+          const path = resolvePath(
+            model,
+            site.scope,
+            site.expression,
+            document,
+          );
+          if (!path) continue;
+          path.members.forEach((member, index) => {
+            if (member === target) {
+              const segment = path.segments[index];
+              if (segment) replace(segment.range);
+            }
+          });
+        }
+        return edit;
+      },
+    }),
+    vscode.languages.registerDocumentSymbolProvider("dams", {
+      provideDocumentSymbols(document) {
+        const analysis = getAnalysis(document);
+        const symbols = (members: Member[]): vscode.DocumentSymbol[] =>
+          members.map((member) => {
+            const children =
+              member.expression.kind === "object"
+                ? symbols(member.expression.members)
+                : [];
+            return new vscode.DocumentSymbol(
+              member.key.text,
+              member.annotation ?? "",
+              children.length
+                ? vscode.SymbolKind.Object
+                : vscode.SymbolKind.Field,
+              toRange(member.range),
+              toRange(member.key.range),
+            );
+          });
+        return symbols(analysis.document.members);
+      },
+    }),
+    vscode.languages.registerInlayHintsProvider("dams", {
+      provideInlayHints(document) {
+        const analysis = getAnalysis(document);
+        const hasErrors = analysis.diagnostics.some(
+          (diagnostic) => diagnostic.severity === "error",
+        );
+        if (!hasErrors && isBakedDocument(analysis.document)) return [];
+        const hints: vscode.InlayHint[] = [];
+        const source = document.getText();
+        const overlapsError = (member: Member) =>
+          analysis.diagnostics.some(
+            (diagnostic) =>
+              diagnostic.severity === "error" &&
+              diagnostic.range.start.offset <= member.range.end.offset &&
+              member.range.start.offset <= diagnostic.range.end.offset,
+          );
+        const visit = (members: Member[]) =>
+          members.forEach((member) => {
+            const value = analysis.evaluator.getMemberValue(member);
+            const unavailable =
+              analysis.evaluator.hasEvaluationError(member) ||
+              overlapsError(member);
+            if (!unavailable && !member.annotation) {
+              const colonOffset = source.indexOf(
+                ":",
+                member.key.range.end.offset,
+              );
+              if (colonOffset >= 0) {
+                const hint = new vscode.InlayHint(
+                  document.positionAt(colonOffset),
+                  ` (${typeOf(value)})`,
+                  vscode.InlayHintKind.Type,
+                );
+                hint.paddingRight = true;
+                hints.push(hint);
+              }
+            }
+            const computed = !["literal", "object", "array"].includes(
+              member.expression.kind,
+            );
+            const scalar =
+              value && value.type !== "object" && value.type !== "array";
+            if (!unavailable && computed && scalar) {
+              const hint = new vscode.InlayHint(
+                document.positionAt(member.expression.range.end.offset),
+                ` = ${analysis.evaluator.formatValue(value)}`,
+                vscode.InlayHintKind.Parameter,
+              );
+              hint.paddingLeft = true;
+              hints.push(hint);
+            }
+            if (member.expression.kind === "object")
+              visit(member.expression.members);
+          });
+        visit(analysis.document.members);
+        return hints;
+      },
+    }),
+  ];
+}

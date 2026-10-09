@@ -6,7 +6,10 @@
       "type": "extensionHost",
       "request": "launch",
       "preLaunchTask": "build DAMS extension",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}/extension", "${workspaceFolder}/examples/requests.dams"],
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/extension",
+        "${workspaceFolder}/examples/requests.dams"
+      ],
       "outFiles": ["${workspaceFolder}/extension/dist/**/*.js"]
     }
   ]
