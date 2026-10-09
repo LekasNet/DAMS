@@ -1,0 +1,22 @@
+{
+  "name": "dams-vscode",
+  "private": true,
+  "version": "0.2.3",
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "test": "vitest run",
+    "watch": "node esbuild.mjs --watch",
+    "package": "npm run build && cd extension && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.95.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "vsce": "^2.15.0"
+  },
+  "dependencies": {
+    "3d-force-graph": "^1.80.1"
+  }
+}

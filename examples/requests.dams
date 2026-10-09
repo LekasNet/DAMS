@@ -1,0 +1,6 @@
+Services: { ReadDID: 0x22 }
+DIDs: { VIN: 0xF190 }
+Requests: {
+    ReadVIN: Services.ReadDID & DIDs.VIN
+    Timeout: 100 * 3
+}

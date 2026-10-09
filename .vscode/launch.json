@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run DAMS Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "preLaunchTask": "build DAMS extension",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}/extension", "${workspaceFolder}/examples/requests.dams"],
+      "outFiles": ["${workspaceFolder}/extension/dist/**/*.js"]
+    }
+  ]
+}

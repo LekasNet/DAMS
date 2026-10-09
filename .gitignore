@@ -1,0 +1,19 @@
+# Node.js dependencies and tool caches
+node_modules/
+.npm/
+.vite/
+coverage/
+
+# Generated extension bundles and packages
+extension/dist/
+extension/*.vsix
+
+# Editor and operating-system files
+.DS_Store
+examples/.DS_Store
+.vscode/*.log
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp

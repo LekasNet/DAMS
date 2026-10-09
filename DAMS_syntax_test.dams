@@ -1,0 +1,115 @@
+// DAMS v0.3 — practical configuration and syntax highlighting sample
+// Section 1: a realistic UDS diagnostic configuration
+
+Services: {
+    ReadDataByIdentifier: 0x22
+    WriteDataByIdentifier: 0x2E
+    PositiveReadResponse: 0x62
+}
+
+DIDs: {
+    VIN: 0xF190
+    SoftwareVersion: 0xF195
+    HardwareNumber: 0xF191
+}
+
+Settings: {
+    Retries: 3
+    BaseTimeout: 125.5
+    Timeout: .BaseTimeout * 2
+    Enabled: true
+    Description: "UDS diagnostics: ESC / ABS"
+    MissingParameter: undefined
+    OptionalParameter: null
+}
+
+Requests: {
+    ReadVIN: Services.ReadDataByIdentifier & DIDs.VIN
+    ReadSoftwareVersion: Services.ReadDataByIdentifier & DIDs.SoftwareVersion
+    WriteVINPrefix: Services.WriteDataByIdentifier & DIDs.VIN
+
+    ExpectedVINResponse: Services.PositiveReadResponse & DIDs.VIN
+    TotalTimeout: Settings.Timeout * Settings.Retries
+}
+
+DataDescriptions (dict): {
+    "Vehicle Identification Number": {
+        DID: DIDs.VIN
+        Length: 17
+        Encoding: "ASCII"
+    }
+    "Supplier software version": {
+        DID: DIDs.SoftwareVersion
+        Length: 23
+        Encoding: "ASCII"
+    }
+}
+
+// Section 2: syntax-highlighting coverage (all expressions are intended as valid DAMS)
+
+SyntaxTest: {
+    // Literals
+    Integer: -42
+    Floating: 3.14159
+    Hexadecimal: 0x00F190
+    Binary: 0b00100010
+    Octal: 0o007
+    BooleanTrue: true
+    BooleanFalse: false
+    NullValue: null
+    UndefinedValue: undefined
+
+    // Strings: only quote and backslash escapes are special
+    Quote: "He said \"Hello\""
+    Backslash: "String like \\"
+    LiteralEscapes: "C:\Users\Documents\new"
+
+    // Identifiers, string keys, annotations and dictionaries
+    Valid_Name_123: "identifier"
+    "Full Name": "string key in object"
+    ExplicitString (string): 123
+    ExplicitHex (hex): 255
+    ExplicitFloat (float): 10
+    Dictionary (dict): {
+        "Full Name": "Andrew"
+        "DID_$F190": 0xF190
+    }
+
+    // Arrays, indexing and slicing
+    Numbers: [10, 20, 30, 40]
+    Nested: [true, [1, 2, 3], {Key: "value"}]
+    Second: .Numbers[1]
+    Slice: .Numbers[1:3]
+    Bytes: 0x22F190
+    FirstByte: .Bytes[0]
+    LastTwoBytes: .Bytes[1:3]
+
+    // Arithmetic, parentheses, absolute and relative references
+    A: 10
+    B: .A * 2
+    C: (.B + 5) / 5
+    AbsoluteReference: Settings.Retries
+    MissingReference: Settings.DoesNotExist
+
+    // Concatenation across scalar representations
+    RequestBytes: Services.ReadDataByIdentifier & DIDs.VIN
+    MixedHex: 0x22 & "F190"
+    MixedString (string): 0x22 & "F190"
+    MixedDecimal: 10 & 0x22
+    MixedAsHex (hex): 10 & 0x22
+    JoinedArray: [1, 2] & [3, 4]
+    JoinedObject: {Left: 1} & {Right: 2}
+
+    // Multiline expressions (line ends with an operator)
+    MultilineRequest: Services.ReadDataByIdentifier &
+        DIDs.VIN
+    MultilineArithmetic: .A +
+        .B * 3
+
+    // Value on the next nonempty line after a colon
+    NextLineValue:
+        "supported"
+
+    // Optional trailing comma
+    TrailingComma: [1, 2, 3,]
+}
